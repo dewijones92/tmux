@@ -25,10 +25,10 @@
 
 static void	screen_write_collect_clear(struct screen_write_ctx *, u_int,
 		    u_int);
-static int	screen_write_collect_clear_end(struct screen_write_ctx *, u_int,
+static void	screen_write_collect_clear_end(struct screen_write_ctx *, u_int,
+		    u_int);
+static void	screen_write_collect_clear_start(struct screen_write_ctx *,
 		    u_int, u_int);
-static int	screen_write_collect_clear_start(struct screen_write_ctx *,
-		    u_int, u_int, u_int);
 static void	screen_write_collect_scroll(struct screen_write_ctx *);
 static void	screen_write_collect_flush(struct screen_write_ctx *, int,
 		    const char *);
@@ -37,10 +37,6 @@ static int	screen_write_overwrite(struct screen_write_ctx *,
 		    struct grid_cell *, u_int);
 static const struct grid_cell *screen_write_combine(struct screen_write_ctx *,
 		    const struct utf8_data *, u_int *);
-
-static const struct grid_cell screen_write_pad_cell = {
-	{ { ' ' }, 0, 1, 1 }, 0, GRID_FLAG_PADDING, 8, 8, 0
-};
 
 struct screen_write_collect_item {
 	u_int			 x;
@@ -107,7 +103,8 @@ screen_write_redraw_cb(const struct tty_ctx *ttyctx)
 {
 	struct window_pane	*wp = ttyctx->arg;
 
-	wp->flags |= PANE_REDRAW;
+	if (wp != NULL)
+		wp->flags |= PANE_REDRAW;
 }
 
 /* Update context for client. */
@@ -1130,13 +1127,12 @@ screen_write_clearendofline(struct screen_write_ctx *ctx, u_int bg)
 
 	grid_view_clear(s->grid, s->cx, s->cy, sx - s->cx, 1, bg);
 
-	if (!screen_write_collect_clear_end(ctx, s->cy, s->cx, bg)) {
-		ci->x = s->cx;
-		ci->type = CLEAR_END;
-		ci->bg = bg;
-		TAILQ_INSERT_TAIL(&ctx->s->write_list[s->cy].items, ci, entry);
-		ctx->item = xcalloc(1, sizeof *ctx->item);
-	}
+ 	screen_write_collect_clear_end(ctx, s->cy, s->cx);
+	ci->x = s->cx;
+	ci->type = CLEAR_END;
+	ci->bg = bg;
+	TAILQ_INSERT_TAIL(&ctx->s->write_list[s->cy].items, ci, entry);
+	ctx->item = xcalloc(1, sizeof *ctx->item);
 }
 
 /* Clear to start of line from cursor. */
@@ -1157,13 +1153,12 @@ screen_write_clearstartofline(struct screen_write_ctx *ctx, u_int bg)
 	else
 		grid_view_clear(s->grid, 0, s->cy, s->cx + 1, 1, bg);
 
-	if (!screen_write_collect_clear_start(ctx, s->cy, s->cx, bg)) {
-		ci->x = s->cx;
-		ci->type = CLEAR_START;
-		ci->bg = bg;
-		TAILQ_INSERT_TAIL(&ctx->s->write_list[s->cy].items, ci, entry);
-		ctx->item = xcalloc(1, sizeof *ctx->item);
-	}
+	screen_write_collect_clear_start(ctx, s->cy, s->cx);
+	ci->x = s->cx;
+	ci->type = CLEAR_START;
+	ci->bg = bg;
+	TAILQ_INSERT_TAIL(&ctx->s->write_list[s->cy].items, ci, entry);
+	ctx->item = xcalloc(1, sizeof *ctx->item);
 }
 
 /* Move cursor to px,py. */
@@ -1396,25 +1391,18 @@ screen_write_clearhistory(struct screen_write_ctx *ctx)
 }
 
 /* Clear to start of a collected line. */
-static int
-screen_write_collect_clear_start(struct screen_write_ctx *ctx, u_int y, u_int x,
-    u_int bg)
+static void
+screen_write_collect_clear_start(struct screen_write_ctx *ctx, u_int y, u_int x)
 {
 	struct screen_write_collect_item	*ci, *tmp;
 	size_t					 size = 0;
 	u_int					 items = 0;
-	int					 redundant = 0;
 
 	if (TAILQ_EMPTY(&ctx->s->write_list[y].items))
-		return (0);
+		return;
 	TAILQ_FOREACH_SAFE(ci, &ctx->s->write_list[y].items, entry, tmp) {
 		switch (ci->type) {
 		case CLEAR_START:
-			if (ci->x >= x) {
-				if (ci->bg == bg)
-					redundant = 1;
-				continue;
-			}
 			break;
 		case CLEAR_END:
 			if (ci->x <= x)
@@ -1433,21 +1421,18 @@ screen_write_collect_clear_start(struct screen_write_ctx *ctx, u_int y, u_int x,
 	ctx->skipped += size;
 	log_debug("%s: dropped %u items (%zu bytes) (line %u)", __func__, items,
 	    size, y);
-	return (redundant);
 }
 
 /* Clear to end of a collected line. */
-static int
-screen_write_collect_clear_end(struct screen_write_ctx *ctx, u_int y, u_int x,
-    u_int bg)
+static void
+screen_write_collect_clear_end(struct screen_write_ctx *ctx, u_int y, u_int x)
 {
 	struct screen_write_collect_item	*ci, *tmp;
 	size_t					 size = 0;
-	int					 redundant = 0;
 	u_int					 items = 0;
 
 	if (TAILQ_EMPTY(&ctx->s->write_list[y].items))
-		return (0);
+		return;
 	TAILQ_FOREACH_SAFE(ci, &ctx->s->write_list[y].items, entry, tmp) {
 		switch (ci->type) {
 		case CLEAR_START:
@@ -1455,11 +1440,6 @@ screen_write_collect_clear_end(struct screen_write_ctx *ctx, u_int y, u_int x,
 				ci->x = x;
 			continue;
 		case CLEAR_END:
-			if (ci->x <= x) {
-				if (ci->bg == bg)
-					redundant = 1;
-				continue;
-			}
 			break;
 		case TEXT:
 			if (ci->x < x)
@@ -1474,7 +1454,6 @@ screen_write_collect_clear_end(struct screen_write_ctx *ctx, u_int y, u_int x,
 	ctx->skipped += size;
 	log_debug("%s: dropped %u items (%zu bytes) (line %u)", __func__, items,
 	    size, y);
-	return (redundant);
 }
 
 /* Clear collected lines. */
@@ -1569,6 +1548,7 @@ screen_write_collect_flush(struct screen_write_ctx *ctx, int scroll_only,
 		TAILQ_FOREACH_SAFE(ci, &cl->items, entry, tmp) {
 			screen_write_set_cursor(ctx, ci->x, y);
 			if (ci->type == CLEAR_END) {
+				log_debug("XXX %u %u", ci->x, ci->bg);
 				screen_write_initctx(ctx, &ttyctx, 1);
 				ttyctx.bg = ci->bg;
 				tty_write(tty_cmd_clearendofline, &ttyctx);
@@ -1774,7 +1754,7 @@ screen_write_cell(struct screen_write_ctx *ctx, const struct grid_cell *gc)
 	 */
 	for (xx = s->cx + 1; xx < s->cx + width; xx++) {
 		log_debug("%s: new padding at %u,%u", __func__, xx, s->cy);
-		grid_view_set_cell(gd, xx, s->cy, &screen_write_pad_cell);
+		grid_view_set_padding(gd, xx, s->cy);
 		skip = 0;
 	}
 

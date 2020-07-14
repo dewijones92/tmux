@@ -95,17 +95,33 @@ static const struct tty_default_key_raw tty_default_raw_keys[] = {
 	{ "\033OC", KEYC_RIGHT|KEYC_CURSOR },
 	{ "\033OD", KEYC_LEFT|KEYC_CURSOR },
 
+	{ "\033\033OA", KEYC_UP|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033OB", KEYC_DOWN|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033OC", KEYC_RIGHT|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033OD", KEYC_LEFT|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+
 	{ "\033[A", KEYC_UP|KEYC_CURSOR },
 	{ "\033[B", KEYC_DOWN|KEYC_CURSOR },
 	{ "\033[C", KEYC_RIGHT|KEYC_CURSOR },
 	{ "\033[D", KEYC_LEFT|KEYC_CURSOR },
 
+	{ "\033\033[A", KEYC_UP|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033[B", KEYC_DOWN|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033[C", KEYC_RIGHT|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033[D", KEYC_LEFT|KEYC_CURSOR|KEYC_META|KEYC_IMPLIED_META },
+
 	/* Other (xterm) "cursor" keys. */
 	{ "\033OH", KEYC_HOME },
 	{ "\033OF", KEYC_END },
 
+	{ "\033\033OH", KEYC_HOME|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033OF", KEYC_END|KEYC_META|KEYC_IMPLIED_META },
+
 	{ "\033[H", KEYC_HOME },
 	{ "\033[F", KEYC_END },
+
+	{ "\033\033[H", KEYC_HOME|KEYC_META|KEYC_IMPLIED_META },
+	{ "\033\033[F", KEYC_END|KEYC_META|KEYC_IMPLIED_META },
 
 	/* rxvt-style arrow + modifier keys. */
 	{ "\033Oa", KEYC_UP|KEYC_CTRL },
@@ -636,8 +652,6 @@ tty_keys_next(struct tty *tty)
 	key_code		 key;
 	struct mouse_event	 m = { 0 };
 	struct key_event	*event;
-
-	gettimeofday(&tv, NULL);
 
 	/* Get key buffer. */
 	buf = EVBUFFER_DATA(tty->in);

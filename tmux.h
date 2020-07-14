@@ -259,6 +259,7 @@ enum {
 /* Termcap codes. */
 enum tty_code_code {
 	TTYC_ACSC,
+	TTYC_AM,
 	TTYC_AX,
 	TTYC_BCE,
 	TTYC_BEL,
@@ -479,7 +480,6 @@ enum tty_code_code {
 	TTYC_TSL,
 	TTYC_U8,
 	TTYC_VPA,
-	TTYC_XENL,
 	TTYC_XT
 };
 
@@ -517,6 +517,7 @@ enum msgtype {
 	MSG_UNLOCK,
 	MSG_WAKEUP,
 	MSG_EXEC,
+	MSG_FLAGS,
 
 	MSG_READ_OPEN = 300,
 	MSG_READ,
@@ -930,9 +931,6 @@ struct window_pane {
 	u_int		 sx;
 	u_int		 sy;
 
-	u_int		 osx;
-	u_int		 osy;
-
 	u_int		 xoff;
 	u_int		 yoff;
 
@@ -953,7 +951,7 @@ struct window_pane {
 #define PANE_STATUSDRAWN 0x400
 #define PANE_EMPTY 0x800
 #define PANE_STYLECHANGED 0x1000
-#define PANE_RESIZED 0x2000
+#define PANE_RESIZENOW 0x2000
 
 	int		 argc;
 	char	       **argv;
@@ -971,6 +969,7 @@ struct window_pane {
 	size_t		 base_offset;
 
 	struct event	 resize_timer;
+	struct event	 force_timer;
 
 	struct input_ctx *ictx;
 
@@ -1258,7 +1257,7 @@ struct tty_term {
 	struct tty_code	*codes;
 
 #define TERM_256COLOURS 0x1
-#define TERM_NOXENL 0x2
+#define TERM_NOAM 0x2
 #define TERM_DECSLRM 0x4
 #define TERM_DECFRA 0x8
 #define TERM_RGBCOLOURS 0x10
@@ -1577,7 +1576,9 @@ struct client {
 	struct cmdq_list *queue;
 
 	struct client_windows windows;
+
 	struct control_state *control_state;
+	u_int		 pause_age;
 
 	pid_t		 pid;
 	int		 fd;
@@ -1645,6 +1646,8 @@ struct client {
 #define CLIENT_REDRAWPANES 0x20000000
 #define CLIENT_NOFORK 0x40000000
 #define CLIENT_ACTIVEPANE 0x80000000ULL
+#define CLIENT_CONTROL_PAUSEAFTER 0x100000000ULL
+#define CLIENT_CONTROL_WAITEXIT 0x200000000ULL
 #define CLIENT_ALLREDRAWFLAGS		\
 	(CLIENT_REDRAWWINDOW|		\
 	 CLIENT_REDRAWSTATUS|		\
@@ -1669,6 +1672,7 @@ struct client {
 	}		 exit_type;
 	enum msgtype	 exit_msgtype;
 	char		*exit_session;
+	char		*exit_message;
 
 	struct key_table *keytable;
 
@@ -1719,6 +1723,15 @@ struct client {
 	TAILQ_ENTRY(client) entry;
 };
 TAILQ_HEAD(clients, client);
+
+/* Control mode subscription type. */
+enum control_sub_type {
+	CONTROL_SUB_SESSION,
+	CONTROL_SUB_PANE,
+	CONTROL_SUB_ALL_PANES,
+	CONTROL_SUB_WINDOW,
+	CONTROL_SUB_ALL_WINDOWS
+};
 
 /* Key binding and key table. */
 struct key_binding {
@@ -1854,6 +1867,7 @@ extern int		 ptm_fd;
 extern const char	*shell_command;
 int		 checkshell(const char *);
 void		 setblocking(int, int);
+uint64_t	 get_timer(void);
 const char	*sig2name(int);
 const char	*find_cwd(void);
 const char	*find_home(void);
@@ -1914,16 +1928,19 @@ char		*paste_make_sample(struct paste_buffer *);
 #define FORMAT_WINDOW 0x40000000U
 struct format_tree;
 struct format_modifier;
+typedef char *(*format_cb)(struct format_tree *);
 const char	*format_skip(const char *, const char *);
 int		 format_true(const char *);
 struct format_tree *format_create(struct client *, struct cmdq_item *, int,
 		     int);
 void		 format_free(struct format_tree *);
 void		 format_merge(struct format_tree *, struct format_tree *);
+struct window_pane *format_get_pane(struct format_tree *);
 void printflike(3, 4) format_add(struct format_tree *, const char *,
 		     const char *, ...);
 void		 format_add_tv(struct format_tree *, const char *,
 		     struct timeval *);
+void		 format_add_cb(struct format_tree *, const char *, format_cb);
 void		 format_each(struct format_tree *, void (*)(const char *,
 		     const char *, void *), void *);
 char		*format_expand_time(struct format_tree *, const char *);
@@ -1984,7 +2001,6 @@ struct options	*options_owner(struct options_entry *);
 const struct options_table_entry *options_table_entry(struct options_entry *);
 struct options_entry *options_get_only(struct options *, const char *);
 struct options_entry *options_get(struct options *, const char *);
-void		 options_remove(struct options_entry *);
 void		 options_array_clear(struct options_entry *);
 union options_value *options_array_get(struct options_entry *, u_int);
 int		 options_array_set(struct options_entry *, u_int, const char *,
@@ -2021,6 +2037,8 @@ int		 options_from_string(struct options *,
 		     const struct options_table_entry *, const char *,
 		     const char *, int, char **);
 void		 options_push_changes(const char *);
+int		 options_remove_or_default(struct options_entry *, int,
+		     char **);
 
 /* options-table.c */
 extern const struct options_table_entry options_table[];
@@ -2321,7 +2339,9 @@ struct key_binding *key_bindings_next(struct key_table *, struct key_binding *);
 void	 key_bindings_add(const char *, key_code, const char *, int,
 	     struct cmd_list *);
 void	 key_bindings_remove(const char *, key_code);
+void	 key_bindings_reset(const char *, key_code);
 void	 key_bindings_remove_table(const char *);
+void	 key_bindings_reset_table(const char *);
 void	 key_bindings_init(void);
 struct cmdq_item *key_bindings_dispatch(struct key_binding *,
 	     struct cmdq_item *, struct client *, struct key_event *,
@@ -2411,7 +2431,9 @@ void	 server_lock(void);
 void	 server_lock_session(struct session *);
 void	 server_lock_client(struct client *);
 void	 server_kill_pane(struct window_pane *);
-void	 server_kill_window(struct window *);
+void	 server_kill_window(struct window *, int);
+void	 server_renumber_session(struct session *);
+void	 server_renumber_all(void);
 int	 server_link_window(struct session *,
 	     struct winlink *, struct session *, int, int, int, char **);
 void	 server_unlink_window(struct session *, struct winlink *);
@@ -2448,8 +2470,9 @@ void	 status_prompt_save_history(void);
 void	 resize_window(struct window *, u_int, u_int, int, int);
 void	 default_window_size(struct client *, struct session *, struct window *,
 	     u_int *, u_int *, u_int *, u_int *, int);
-void	 recalculate_size(struct window *);
+void	 recalculate_size(struct window *, int);
 void	 recalculate_sizes(void);
+void	 recalculate_sizes_now(int);
 
 /* input.c */
 struct input_ctx *input_init(struct window_pane *, struct bufferevent *);
@@ -2498,6 +2521,7 @@ void	 grid_clear_history(struct grid *);
 const struct grid_line *grid_peek_line(struct grid *, u_int);
 void	 grid_get_cell(struct grid *, u_int, u_int, struct grid_cell *);
 void	 grid_set_cell(struct grid *, u_int, u_int, const struct grid_cell *);
+void	 grid_set_padding(struct grid *, u_int, u_int);
 void	 grid_set_cells(struct grid *, u_int, u_int, const struct grid_cell *,
 	     const char *, size_t);
 struct grid_line *grid_get_line(struct grid *, u_int);
@@ -2519,6 +2543,7 @@ u_int	 grid_line_length(struct grid *, u_int);
 void	 grid_view_get_cell(struct grid *, u_int, u_int, struct grid_cell *);
 void	 grid_view_set_cell(struct grid *, u_int, u_int,
 	     const struct grid_cell *);
+void	 grid_view_set_padding(struct grid *, u_int, u_int);
 void	 grid_view_set_cells(struct grid *, u_int, u_int,
 	     const struct grid_cell *, const char *, size_t);
 void	 grid_view_clear_history(struct grid *, u_int);
@@ -2713,7 +2738,7 @@ void		 window_set_name(struct window *, const char *);
 void		 window_add_ref(struct window *, const char *);
 void		 window_remove_ref(struct window *, const char *);
 void		 winlink_clear_flags(struct winlink *);
-int		 winlink_shuffle_up(struct session *, struct winlink *);
+int		 winlink_shuffle_up(struct session *, struct winlink *, int);
 int		 window_pane_start_input(struct window_pane *,
 		     struct cmdq_item *, char **);
 void		*window_pane_get_new_data(struct window_pane *,
@@ -2795,6 +2820,7 @@ struct mode_tree_item *mode_tree_add(struct mode_tree_data *,
 	     struct mode_tree_item *, void *, uint64_t, const char *,
 	     const char *, int);
 void	 mode_tree_draw_as_parent(struct mode_tree_item *);
+void	 mode_tree_no_tag(struct mode_tree_item *);
 void	 mode_tree_remove(struct mode_tree_data *, struct mode_tree_item *);
 void	 mode_tree_draw(struct mode_tree_data *);
 int	 mode_tree_key(struct mode_tree_data *, struct client *, key_code *,
@@ -2834,17 +2860,22 @@ char	*default_window_name(struct window *);
 char	*parse_window_name(const char *);
 
 /* control.c */
-void	control_flush(struct client *);
+void	control_discard(struct client *);
 void	control_start(struct client *);
 void	control_stop(struct client *);
 void	control_set_pane_on(struct client *, struct window_pane *);
 void	control_set_pane_off(struct client *, struct window_pane *);
+void	control_continue_pane(struct client *, struct window_pane *);
+void	control_pause_pane(struct client *, struct window_pane *);
 struct window_pane_offset *control_pane_offset(struct client *,
 	   struct window_pane *, int *);
 void	control_reset_offsets(struct client *);
 void printflike(2, 3) control_write(struct client *, const char *, ...);
 void	control_write_output(struct client *, struct window_pane *);
 int	control_all_done(struct client *);
+void	control_add_sub(struct client *, const char *, enum control_sub_type,
+    	   int, const char *);
+void	control_remove_sub(struct client *, const char *);
 
 /* control-notify.c */
 void	control_notify_input(struct client *, struct window_pane *,
@@ -2901,7 +2932,7 @@ u_int		 session_group_attached_count(struct session_group *);
 void		 session_renumber_windows(struct session *);
 
 /* utf8.c */
-utf8_char	 utf8_build_one(char, u_int);
+utf8_char	 utf8_build_one(u_char);
 enum utf8_state	 utf8_from_data(const struct utf8_data *, utf8_char *);
 void		 utf8_to_data(utf8_char, struct utf8_data *);
 void		 utf8_set(struct utf8_data *, u_char);
